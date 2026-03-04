@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sand's Checkers</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0f;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #e0e0e0;
+      overflow: hidden;
+    }
+    #game-container {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+    h1 {
+      font-size: 2rem;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      background: linear-gradient(90deg, #ff6b6b, #ffd700);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .status-bar {
+      display: flex;
+      gap: 30px;
+      font-size: 0.9rem;
+      padding: 10px 20px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .status-bar span { color: #888; }
+    .status-bar .value { color: #ffd700; font-weight: bold; }
+    canvas {
+      display: block;
+      border: 3px solid #2a2a3a;
+      border-radius: 8px;
+      box-shadow: 0 0 40px rgba(0,0,0,0.5);
+      cursor: pointer;
+    }
+    .controls { display: flex; gap: 15px; }
+    button {
+      padding: 10px 20px;
+      font-family: inherit;
+      font-size: 0.85rem;
+      background: linear-gradient(180deg, #2a2a3a, #1a1a2a);
+      color: #e0e0e0;
+      border: 1px solid #3a3a4a;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    button:hover {
+      background: linear-gradient(180deg, #3a3a4a, #2a2a3a);
+      border-color: #ffd700;
+      color: #ffd700;
+    }
+    #winner-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.9);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    #winner-overlay.show { display: flex; }
+    #winner-overlay h2 { font-size: 3rem; margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <h1>Sand's Checkers</h1>
+    <div class="status-bar">
+      <span>Turn: <span class="value" id="turn-display">Red</span></span>
+      <span>Phase: <span class="value" id="phase-display">Tactical</span></span>
+      <span>Red: <span class="value" id="red-count">12</span></span>
+      <span>Black: <span class="value" id="black-count">12</span></span>
+    </div>
+    <canvas id="game" width="512" height="512"></canvas>
+    <div class="controls">
+      <button id="new-game">New Game</button>
+      <button id="reset-physics">Reset Physics</button>
+    </div>
+  </div>
+  <div id="winner-overlay">
+    <h2 id="winner-text">Red Wins!</h2>
+    <button id="play-again">Play Again</button>
+  </div>
+
+<script>
+// ==================== CONSTANTS ====================
+const GRID_SIZE = 8;
+const CANVAS_SIZE = 512;
+const CELL_SIZE = CANVAS_SIZE / GRID_SIZE;
+const PHYSICS_SCALE = 32;
+const PHYSICS_WIDTH = GRID_SIZE * PHYSICS_SCALE;
+const PHYSICS_HEIGHT = GRID_SIZE * PHYSICS_SCALE;
+
+const MATERIALS = { air: 0, sand: 1, gravel: 2, bouncy: 3, glass: 4, stone: 5, magma: 6, gold: 7, dust: 8, shards: 9, slag: 10 };
+
+const MATERIAL_COLORS = {
+  0: 0x00000000, 1: 0xFFE4B5FF, 2: 0x8B7355FF, 3: 0xFFD700FF, 4: 0xADD8E6FF,
+  5: 0x696969FF, 6: 0xFF4500FF, 7: 0xFFD700FF, 8: 0xA9A9A9FF, 9: 0x87CEEBFF, 10: 0x2F4F4FFF
+};
+
+// Piece materials
+const PIECE_MATERIALS = {
+  red: 2,      // gravel
+  black: 5,    // stone
+  red_king: 6,    // magma
+  black_king: 7   // gold
+};
+
+const CAPTURE_MATERIALS = {
+  red: 8,      // dust
+  black: 9,    // shards
+  red_king: 10,   // slag
+  black_king: 7   // gold
+};
+
+// ==================== CHECKERS LOGIC ====================
+class CheckersGame {
+  constructor() {
+    this.board = this.createInitialBoard();
+    this.turn = 'red';
+    this.selectedPiece = null;
+    this.validMoves = [];
+    this.phase = 'tactical';
+    this.movingPiece = null;
+    this.mustCapture = null;
+  }
+
+  createInitialBoard() {
+    const board = Array(8).fill(null).map(() => Array(8).fill(null));
+    
+    // Red pieces (top - moves down)
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 8; c++) {
+        if ((r + c) % 2 === 1) {
+          board[r][c] = { color: 'red', isKing: false };
+        }
+      }
+    }
+    
+    // Black pieces (bottom - moves up)
+    for (let r = 5; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if ((r + c) % 2 === 1) {
+          board[r][c] = { color: 'black', isKing: false };
+        }
+      }
+    }
+    
+    return board;
+  }
+
+  selectPiece(row, col) {
+    if (this.phase !== 'tactical') return;
+    
+    const piece = this.board[row]?.[col];
+    if (!piece || piece.color !== this.turn) return;
+
+    // Check if this piece must capture
+    const allCaptures = this.getAllCaptures(this.turn);
+    if (allCaptures.length > 0) {
+      const canCapture = allCaptures.some(c => c.fromRow === row && c.fromCol === col);
+      if (!canCapture) return; // Must capture with different piece
+    }
+
+    this.selectedPiece = { row, col };
+    this.validMoves = this.getValidMoves(row, col);
+  }
+
+  getValidMoves(row, col) {
+    const piece = this.board[row]?.[col];
+    if (!piece) return [];
+
+    const moves = [];
+    const captures = [];
+
+    const directions = piece.isKing ? [[-1,-1],[-1,1],[1,-1],[1,1]] : 
+                      piece.color === 'red' ? [[1,-1],[1,1]] : [[-1,-1],[-1,1]];
+
+    // Check regular moves
+    for (const [dr, dc] of directions) {
+      const nr = row + dr, nc = col + dc;
+      if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && this.board[nr][nc] === null) {
+        moves.push({ row: nr, col: nc, isCapture: false });
+      }
+    }
+
+    // Check captures
+    for (const [dr, dc] of directions) {
+      const jr = row + dr, jc = col + dc;
+      const nr = row + 2*dr, nc = col + 2*dc;
+      
+      if (jr >= 0 && jr < 8 && jc >= 0 && jc < 8 && nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+        const jumped = this.board[jr][jc];
+        if (jumped && jumped.color !== piece.color && this.board[nr][nc] === null) {
+          captures.push({ row: nr, col: nc, isCapture: true, jumpRow: jr, jumpCol: jc });
+        }
+      }
+    }
+
+    return captures.length > 0 ? captures : moves;
+  }
+
+  getAllCaptures(color) {
+    const captures = [];
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (this.board[r]?.[c]?.color === color) {
+          const moves = this.getValidMoves(r, c);
+          captures.push(...moves.filter(m => m.isCapture).map(m => ({ ...m, fromRow: r, fromCol: c })));
+        }
+      }
+    }
+    return captures;
+  }
+
+  movePiece(toRow, toCol) {
+    if (!this.selectedPiece) return false;
+    
+    const move = this.validMoves.find(m => m.row === toRow && m.col === toCol);
+    if (!move) return false;
+
+    const fromRow = this.selectedPiece.row;
+    const fromCol = this.selectedPiece.col;
+    const piece = this.board[fromRow][fromCol];
+    const captured = move.isCapture ? this.board[move.jumpRow][move.jumpCol] : null;
+
+    this.phase = 'physical';
+    this.movingPiece = { fromRow, fromCol, toRow, toCol, piece, captured, progress: 0, jumpRow: move.jumpRow, jumpCol: move.jumpCol };
+    return true;
+  }
+
+  completeMove() {
+    if (!this.movingPiece) return;
+
+    const { fromRow, fromCol, toRow, toCol, piece, jumpRow, jumpCol } = this.movingPiece;
+    
+    // Handle capture
+    if (jumpRow !== undefined) {
+      this.board[jumpRow][jumpCol] = null;
+    }
+
+    // Move piece
+    piece.isKing = piece.isKing || (piece.color === 'red' ? toRow === 7 : toRow === 0);
+    this.board[toRow][toCol] = piece;
+    this.board[fromRow][fromCol] = null;
+
+    // Check for additional captures (multi-jump)
+    if (jumpRow !== undefined && !piece.isKing) {
+      const moreCaptures = this.getValidMoves(toRow, toCol).filter(m => m.isCapture);
+      if (moreCaptures.length > 0) {
+        this.selectedPiece = { row: toRow, col: toCol };
+        this.validMoves = moreCaptures;
+        this.phase = 'tactical';
+        this.movingPiece = null;
+        return 'multi';
+      }
+    }
+
+    // Switch turn
+    this.turn = this.turn === 'red' ? 'black' : 'red';
+    this.selectedPiece = null;
+    this.validMoves = [];
+    this.movingPiece = null;
+    this.phase = 'tactical';
+
+    // Check for winner
+    const winner = this.checkWinner();
+    if (winner) return winner;
+    
+    return true;
+  }
+
+     let redCount = 0, blackCount = 0;
+    for (let r = 0 checkWinner() {
+; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (this.board[r]?.[c]) {
+          if (this.board[r][c].color === 'red') redCount++;
+          else blackCount++;
+        }
+      }
+    }
+
+    if (redCount === 0) return 'black';
+    if (blackCount === 0) return 'red';
+    
+    // Check if current player has any moves
+    let hasMoves = false;
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (this.board[r]?.[c]?.color === this.turn) {
+          if (this.getValidMoves(r, c).length > 0) {
+            hasMoves = true;
+            break;
+          }
+        }
+      }
+      if (hasMoves) break;
+    }
+    
+    if (!hasMoves) return this.turn === 'red' ? 'black' : 'red';
+    
+    return null;
+  }
+
+  getPieceCounts() {
+    let red = 0, black = 0;
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (this.board[r]?.[c]) {
+          if (this.board[r][c].color === 'red') red++;
+          else black++;
+        }
+      }
+    }
+    return { red, black };
+  }
+
+  reset() {
+    this.board = this.createInitialBoard();
+    this.turn = 'red';
+    this.selectedPiece = null;
+    this.validMoves = [];
+    this.phase = 'tactical';
+    this.movingPiece = null;
+  }
+}
+
+// ==================== PHYSICS ====================
+class PhysicsEngine {
+  constructor() {
+    this.grid = new Uint8Array(PHYSICS_WIDTH * PHYSICS_HEIGHT);
+    this.colorGrid = new Uint32Array(PHYSICS_WIDTH * PHYSICS_HEIGHT);
+    this.particles = [];
+  }
+
+  idx(x, y) { return y * PHYSICS_WIDTH + x; }
+
+  spawnPiece(row, col, material, color, isKing = false, count = 150) {
+    const sx = col * PHYSICS_SCALE + 4;
+    const sy = row * PHYSICS_SCALE + 4;
+    const size = PHYSICS_SCALE - 8;
+
+    for (let i = 0; i < count; i++) {
+      const x = sx + Math.floor(Math.random() * size);
+      const y = sy + Math.floor(Math.random() * size);
+      if (x >= 0 && x < PHYSICS_WIDTH && y >= 0 && y < PHYSICS_HEIGHT) {
+        const id = this.idx(x, y);
+        if (this.grid[id] === 0) {
+          this.grid[id] = material;
+          this.colorGrid[id] = color;
+          this.particles.push({ x, y, vx: 0, vy: 0, mat: material, col: color });
+        }
+      }
+    }
+  }
+
+  spawnCapture(row, col, material, color, count = 200) {
+    const sx = col * PHYSICS_SCALE;
+    const sy = row * PHYSICS_SCALE;
+    for (let i = 0; i < count; i++) {
+      const x = sx + Math.floor(Math.random() * PHYSICS_SCALE);
+      const y = sy + Math.floor(Math.random() * PHYSICS_SCALE);
+      if (x >= 0 && x < PHYSICS_WIDTH && y >= 0 && y < PHYSICS_HEIGHT) {
+        const id = this.idx(x, y);
+        this.grid[id] = material;
+        this.colorGrid[id] = color;
+        this.particles.push({ 
+          x, y, 
+          vx: (Math.random() - 0.5) * 5, 
+          vy: (Math.random() - 0.5) * 5 - 3, 
+          mat: material, col: color 
+        });
+      }
+    }
+  }
+
+  spawnTrail(row, col, material, color, count = 30) {
+    const sx = col * PHYSICS_SCALE;
+    const sy = row * PHYSICS_SCALE;
+    for (let i = 0; i < count; i++) {
+      const x = sx + Math.floor(Math.random() * PHYSICS_SCALE);
+      const y = sy + Math.floor(Math.random() * PHYSICS_SCALE);
+      if (x >= 0 && x < PHYSICS_WIDTH && y >= 0 && y < PHYSICS_HEIGHT) {
+        const id = this.idx(x, y);
+        if (this.grid[id] === 0) { this.grid[id] = material; this.colorGrid[id] = color; }
+      }
+    }
+  }
+
+  moveParticles(fR, fC, tR, tC, prog) {
+    const fX = fC * PHYSICS_SCALE + PHYSICS_SCALE/2;
+    const fY = fR * PHYSICS_SCALE + PHYSICS_SCALE/2;
+    const tX = tC * PHYSICS_SCALE + PHYSICS_SCALE/2;
+    const tY = tR * PHYSICS_SCALE + PHYSICS_SCALE/2;
+    const cx = fX + (tX - fX) * prog;
+    const cy = fY + (tY - fY) * prog;
+
+    for (let py = fR * PHYSICS_SCALE; py < (fR+1) * PHYSICS_SCALE; py++) {
+      for (let px = fC * PHYSICS_SCALE; px < (fC+1) * PHYSICS_SCALE; px++) {
+        const id = this.idx(px, py);
+        if (this.grid[id] !== 0) { this.grid[id] = 0; this.colorGrid[id] = 0; }
+      }
+    }
+
+    for (let i = 0; i < 80; i++) {
+      const x = Math.floor(cx) + Math.floor((Math.random() - 0.5) * 20);
+      const y = Math.floor(cy) + Math.floor((Math.random() - 0.5) * 20);
+      if (x >= 0 && x < PHYSICS_WIDTH && y >= 0 && y < PHYSICS_HEIGHT) {
+        const id = this.idx(x, y);
+        if (this.grid[id] === 0) { 
+          this.grid[id] = this.lastMat || 2; 
+          this.colorGrid[id] = this.lastCol || 0xFFFFFFFF; 
+        }
+      }
+    }
+  }
+
+  update() {
+    const ng = new Uint8Array(this.grid);
+    const nc = new Uint32Array(this.colorGrid);
+
+    // Update particles
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const p = this.particles[i];
+      if (p.vx !== 0 || p.vy !== 0) {
+        p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.vx *= 0.98; p.vy *= 0.98;
+        if (p.x < 0 || p.x >= PHYSICS_WIDTH || p.y < 0 || p.y >= PHYSICS_HEIGHT) {
+          this.particles.splice(i, 1);
+          continue;
+        }
+        const ix = Math.floor(p.x), iy = Math.floor(p.y);
+        if (ix >= 0 && ix < PHYSICS_WIDTH && iy >= 0 && iy < PHYSICS_HEIGHT) {
+          ng[iy * PHYSICS_WIDTH + ix] = p.mat;
+          nc[iy * PHYSICS_WIDTH + ix] = p.col;
+        }
+      }
+    }
+
+    // Cellular automata
+    for (let y = PHYSICS_HEIGHT - 2; y >= 0; y--) {
+      for (let x = 0; x < PHYSICS_WIDTH; x++) {
+        const id = this.idx(x, y);
+        const mat = this.grid[id];
+        if (mat === 0 || mat === 6 || mat === 10) continue;
+
+        const bid = this.idx(x, y + 1);
+        if ([1,2,3,8,9].includes(mat) && this.grid[bid] === 0) {
+          ng[bid] = mat; nc[bid] = this.colorGrid[id]; ng[id] = 0; nc[id] = 0;
+        } else if (x > 0 && this.grid[this.idx(x-1,y+1)] === 0 && [1,2,3,8,9].includes(mat)) {
+          ng[this.idx(x-1,y+1)] = mat; nc[this.idx(x-1,y+1)] = this.colorGrid[id]; ng[id] = 0; nc[id] = 0;
+        } else if (x < PHYSICS_WIDTH-1 && this.grid[this.idx(x+1,y+1)] === 0 && [1,2,3,8,9].includes(mat)) {
+          ng[this.idx(x+1,y+1)] = mat; nc[this.idx(x+1,y+1)] = this.colorGrid[id]; ng[id] = 0; nc[id] = 0;
+        }
+      }
+    }
+
+    this.grid = ng;
+    this.colorGrid = nc;
+  }
+
+  reset() {
+    this.grid.fill(0);
+    this.colorGrid.fill(0);
+    this.particles = [];
+  }
+}
+
+// ==================== RENDERER ====================
+class Renderer {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+  }
+
+  draw(game, physics) {
+    this.ctx.fillStyle = '#0a0a0f';
+    this.ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+    // Draw board
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        this.ctx.fillStyle = (r + c) % 2 === 0 ? '#1a1a2a' : '#0f0f1a';
+        this.ctx.fillRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+
+        // Highlight selected
+        if (game.selectedPiece?.row === r && game.selectedPiece?.col === c) {
+          this.ctx.fillStyle = 'rgba(255, 215, 0, 0.3)';
+          this.ctx.fillRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        }
+
+        // Highlight valid moves
+        if (game.validMoves.some(m => m.row === r && m.col === c)) {
+          this.ctx.fillStyle = game.validMoves.find(m => m.row === r && m.col === c).isCapture 
+            ? 'rgba(255, 0, 0, 0.3)' : 'rgba(0, 255, 0, 0.2)';
+          this.ctx.beginPath();
+          this.ctx.arc(c * CELL_SIZE + CELL_SIZE/2, r * CELL_SIZE + CELL_SIZE/2, 8, 0, Math.PI * 2);
+          this.ctx.fill();
+        }
+
+        // Draw piece
+        const piece = game.board[r][c];
+        if (piece && game.phase === 'tactical') {
+          this.drawPiece(piece, c * CELL_SIZE + CELL_SIZE/2, r * CELL_SIZE + CELL_SIZE/2);
+        }
+      }
+    }
+
+    this.drawPhysics(physics);
+
+    // Grid lines
+    this.ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    this.ctx.lineWidth = 1;
+    for (let i = 0; i <= 8; i++) {
+      this.ctx.beginPath();
+      this.ctx.moveTo(i * CELL_SIZE, 0);
+      this.ctx.lineTo(i * CELL_SIZE, CANVAS_SIZE);
+      this.ctx.stroke();
+      this.ctx.beginPath();
+      this.ctx.moveTo(0, i * CELL_SIZE);
+      this.ctx.lineTo(CANVAS_SIZE, i * CELL_SIZE);
+      this.ctx.stroke();
+    }
+  }
+
+  drawPiece(piece, x, y) {
+    const radius = CELL_SIZE * 0.35;
+    
+    // Shadow
+    this.ctx.beginPath();
+    this.ctx.arc(x + 2, y + 2, radius, 0, Math.PI * 2);
+    this.ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    this.ctx.fill();
+
+    // Main piece
+    const gradient = this.ctx.createRadialGradient(x - radius/3, y - radius/3, 0, x, y, radius);
+    if (piece.color === 'red') {
+      gradient.addColorStop(0, '#ff6b6b');
+      gradient.addColorStop(1, '#aa3333');
+    } else {
+      gradient.addColorStop(0, '#666666');
+      gradient.addColorStop(1, '#222222');
+    }
+    
+    this.ctx.beginPath();
+    this.ctx.arc(x, y, radius, 0, Math.PI * 2);
+    this.ctx.fillStyle = gradient;
+    this.ctx.fill();
+    this.ctx.strokeStyle = piece.color === 'red' ? '#ff8888' : '#444444';
+    this.ctx.lineWidth = 2;
+    this.ctx.stroke();
+
+    // King crown
+    if (piece.isKing) {
+      this.ctx.font = `${radius * 0.8}px serif`;
+      this.ctx.textAlign = 'center';
+      this.ctx.textBaseline = 'middle';
+      this.ctx.fillStyle = '#ffd700';
+      this.ctx.fillText('♕', x, y);
+    }
+  }
+
+  drawPhysics(physics) {
+    const sx = CANVAS_SIZE / PHYSICS_WIDTH;
+    const sy = CANVAS_SIZE / PHYSICS_HEIGHT;
+    const img = this.ctx.getImageData(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+    const d = img.data;
+
+    for (let py = 0; py < PHYSICS_HEIGHT; py++) {
+      for (let px = 0; px < PHYSICS_WIDTH; px++) {
+        const mat = physics.grid[physics.idx(px, py)];
+        if (mat !== 0) {
+          const cx = Math.floor(px * sx);
+          const cy = Math.floor(py * sy);
+          if (cx >= 0 && cx < CANVAS_SIZE && cy >= 0 && cy < CANVAS_SIZE) {
+            const i = (cy * CANVAS_SIZE + cx) * 4;
+            const c = physics.colorGrid[physics.idx(px, py)] || MATERIAL_COLORS[mat];
+            d[i] = (c >> 16) & 0xFF;
+            d[i+1] = (c >> 8) & 0xFF;
+            d[i+2] = c & 0xFF;
+            d[i+3] = 255;
+          }
+        }
+      }
+    }
+    this.ctx.putImageData(img, 0, 0);
+  }
+}
+
+// ==================== MAIN ====================
+class Game {
+  constructor() {
+    this.canvas = document.getElementById('game');
+    this.checkers = new CheckersGame();
+    this.physics = new PhysicsEngine();
+    this.renderer = new Renderer(this.canvas);
+    this.animating = false;
+    this.animProgress = 0;
+    this.setupEvents();
+    this.gameLoop();
+  }
+
+  setupEvents() {
+    this.canvas.addEventListener('click', e => {
+      const rect = this.canvas.getBoundingClientRect();
+      const c = Math.floor((e.clientX - rect.left) / CELL_SIZE);
+      const r = Math.floor((e.clientY - rect.top) / CELL_SIZE);
+      
+      if (this.checkers.phase === 'tactical') {
+        if (this.checkers.validMoves.some(m => m.row === r && m.col === c)) {
+          this.checkers.movePiece(r, c);
+          this.startAnim();
+        } else {
+          this.checkers.selectPiece(r, c);
+        }
+      }
+    });
+    document.getElementById('new-game').addEventListener('click', () => this.newGame());
+    document.getElementById('reset-physics').addEventListener('click', () => this.physics.reset());
+    document.getElementById('play-again').addEventListener('click', () => this.newGame());
+  }
+
+  startAnim() {
+    this.animating = true;
+    this.animProgress = 0;
+    const mp = this.checkers.movingPiece;
+    if (!mp) return;
+
+    const pk = mp.piece.isKing ? `${mp.piece.color}_king` : mp.piece.color;
+    const mat = PIECE_MATERIALS[pk];
+    const col = mp.piece.color === 'red' ? 0xFF6B6BFF : 0x666666FF;
+    this.physics.lastMat = mat;
+    this.physics.lastCol = col;
+
+    if (mp.captured) {
+      const ck = mp.captured.isKing ? `${mp.captured.color}_king` : mp.captured.color;
+      this.physics.spawnCapture(mp.jumpRow, mp.jumpCol, CAPTURE_MATERIALS[ck], mp.captured.color === 'red' ? 0xFF6B6BFF : 0x666666FF);
+    }
+
+    const trailMat = PIECE_MATERIALS[pk];
+    this.physics.spawnTrail(mp.fromRow, mp.fromCol, trailMat, col);
+  }
+
+  update() {
+    if (this.animating && this.checkers.movingPiece) {
+      this.animProgress += 0.025;
+      const mp = this.checkers.movingPiece;
+      this.physics.moveParticles(mp.fromRow, mp.fromCol, mp.toRow, mp.toCol, this.animProgress);
+
+      if (this.animProgress >= 1) {
+        const pk = mp.piece.isKing ? `${mp.piece.color}_king` : mp.piece.color;
+        const mat = PIECE_MATERIALS[pk];
+        const col = mp.piece.color === 'red' ? 0xFF6B6BFF : 0x666666FF;
+        this.physics.spawnPiece(mp.toRow, mp.toCol, mat, col, mp.piece.isKing);
+        
+        const result = this.checkers.completeMove();
+        this.animating = false;
+        
+        if (result === 'multi') {
+          // Continue with multi-jump
+        } else if (result === 'red' || result === 'black') {
+          const overlay = document.getElementById('winner-overlay');
+          const text = document.getElementById('winner-text');
+          text.textContent = `${result === 'red' ? 'Red' : 'Black'} Wins!`;
+          text.style.color = result === 'red' ? '#ff6b6b' : '#666666';
+          overlay.className = 'show';
+        }
+      }
+    }
+
+    this.physics.update();
+  }
+
+  draw() {
+    this.renderer.draw(this.checkers, this.physics);
+    
+    const counts = this.checkers.getPieceCounts();
+    document.getElementById('turn-display').textContent = this.checkers.turn.charAt(0).toUpperCase() + this.checkers.turn.slice(1);
+    document.getElementById('turn-display').style.color = this.checkers.turn === 'red' ? '#ff6b6b' : '#888888';
+    document.getElementById('phase-display').textContent = this.checkers.phase.charAt(0).toUpperCase() + this.checkers.phase.slice(1);
+    document.getElementById('red-count').textContent = counts.red;
+    document.getElementById('black-count').textContent = counts.black;
+  }
+
+  gameLoop() {
+    this.update();
+    this.draw();
+    requestAnimationFrame(() => this.gameLoop());
+  }
+
+  newGame() {
+    this.checkers.reset();
+    this.physics.reset();
+    document.getElementById('winner-overlay').className = '';
+  }
+}
+
+// Start game
+new Game();
+</script>
+</body>
+</html>
